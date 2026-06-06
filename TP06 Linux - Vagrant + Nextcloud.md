@@ -313,6 +313,8 @@ sudo ss -ltnp | grep ':3306'
 LISTEN  0  ...  192.168.56.20:3306  ...  mariadbd
 ```
 
+> **Note** : le nom du processus peut apparaître comme `mariadbd` (MariaDB ≥ 10.6) ou `mysqld` selon la version installée. Les deux sont normaux.
+
 **Quitter box02** :
 
 ```bash
@@ -388,13 +390,17 @@ sudo a2enmod rewrite headers env dir mime
 sudo systemctl restart apache2
 ```
 
-**Vérifier la version PHP installée** :
+**Vérifier la version PHP installée et stocker la variable** :
 
 ```bash
 php --version
+PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+echo "Version PHP détectée : $PHP_VER"
 ```
 
-**Résultat attendu** : PHP 8.2.x (version par défaut sur Debian 13)
+**Résultat attendu** : PHP 8.3.x sur Debian 13 (Trixie)
+
+> **Note** : `PHP_VER` est une variable de session shell. Elle devra être redéfinie si vous ouvrez un nouveau terminal ou une nouvelle connexion SSH.
 
 ---
 
@@ -402,10 +408,11 @@ php --version
 
 Les valeurs par défaut de PHP ne sont pas adaptées à Nextcloud.
 
-**Modifier les paramètres** :
+**Détecter le chemin de configuration et modifier les paramètres** :
 
 ```bash
-PHP_INI=/etc/php/8.2/apache2/php.ini
+PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+PHP_INI=/etc/php/${PHP_VER}/apache2/php.ini
 
 sudo sed -i 's/^memory_limit = .*/memory_limit = 512M/'              "$PHP_INI"
 sudo sed -i 's/^upload_max_filesize = .*/upload_max_filesize = 512M/' "$PHP_INI"
@@ -417,8 +424,7 @@ sudo sed -i 's/^max_input_time = .*/max_input_time = 300/'           "$PHP_INI"
 **Vérifier les valeurs appliquées** :
 
 ```bash
-grep -E '^(memory_limit|upload_max_filesize|post_max_size|max_execution_time)' \
-  /etc/php/8.2/apache2/php.ini
+grep -E '^(memory_limit|upload_max_filesize|post_max_size|max_execution_time)' "$PHP_INI"
 ```
 
 **Résultat attendu** :
@@ -433,7 +439,7 @@ max_execution_time = 300
 **Activer APCu pour PHP-CLI** (nécessaire pour les commandes `occ`) :
 
 ```bash
-echo 'apc.enable_cli=1' | sudo tee -a /etc/php/8.2/mods-available/apcu.ini
+echo 'apc.enable_cli=1' | sudo tee -a /etc/php/${PHP_VER}/mods-available/apcu.ini
 sudo phpenmod apcu
 ```
 
@@ -745,12 +751,14 @@ Depuis **box02**, exportez la base `nextcloud` dans un fichier de sauvegarde :
 
 ```bash
 vagrant ssh box02
-mysqldump -u ncuser -pncpassword -h 192.168.56.20 nextcloud \
+sudo mysqldump nextcloud \
   > /home/vagrant/nextcloud-backup-$(date +%Y%m%d).sql
 
 ls -lh /home/vagrant/nextcloud-backup-*.sql
 grep 'CREATE TABLE' /home/vagrant/nextcloud-backup-*.sql | wc -l
 ```
+
+> **Pourquoi `sudo mysqldump` ?** `ncuser` n'est autorisé qu'à se connecter depuis `192.168.56.10` (box01). Depuis box02 lui-même, la connexion avec `ncuser` serait refusée. `sudo mysqldump` utilise le compte root MariaDB via l'authentification `unix_socket`, ce qui fonctionne sans mot de passe depuis la machine locale.
 
 **Validation** : le dump contient plusieurs dizaines de tables.
 
@@ -835,9 +843,10 @@ sudo ss -ltnp | grep ':3306'                                    # doit écouter 
 
 ```bash
 vagrant ssh box01
-php --version                        # Vérifier PHP 8.2
-php -m | grep -E 'pdo_mysql|mysqli'  # Vérifier les extensions BDD
-ls /etc/php/8.2/apache2/php.ini      # Vérifier que le fichier de config existe
+php --version                                                                  # Vérifier PHP 8.x
+php -m | grep -E 'pdo_mysql|mysqli'                                            # Vérifier les extensions BDD
+PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+ls /etc/php/${PHP_VER}/apache2/php.ini                                         # Vérifier que le fichier de config existe
 ```
 
 ---
@@ -879,8 +888,8 @@ vagrant snapshot restore box01 NOM # Restaurer un snapshot
 ```bash
 sudo systemctl status mariadb
 sudo mysql                         # Connexion root locale (sans password)
-mysql -u ncuser -pncpassword -h 192.168.56.20 nextcloud -e "SHOW TABLES;"
-mysqldump -u ncuser -pncpassword -h 192.168.56.20 nextcloud > backup.sql
+mysql -u ncuser -pncpassword -h 192.168.56.20 nextcloud -e "SHOW TABLES;"  # depuis box01 uniquement
+sudo mysqldump nextcloud > backup.sql                                        # dump depuis box02 (root local)
 grep 'bind-address' /etc/mysql/mariadb.conf.d/50-server.cnf
 ```
 
